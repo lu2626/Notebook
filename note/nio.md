@@ -1,10 +1,10 @@
 ## 阻塞式I/O
-每当客户端建立一个tcp连接，服务端都会起一个线程去处理这个连接，不管他是否发送请求报文，这里的请求报文一般常用的就是http报文。
+每当客户端建立一个tcp连接，服务端都会起一个线程去处理这个连接，不管他是否发送请求报文，这里的请求报文一般常用的就是http报文。由于阻塞，所以只能让服务器开线程并发的处理下一个请求。
 
 优点：适合处理特点是连接少且报文内容多的客户端请求
 
-缺点：线程资源是很宝贵的，对于连接多，报文内容少的客户端请求，大部分服务端线程都会因客户端建立了tcp连接但发送报文稀疏而进入等待空闲状态，十分浪费资源。虽然可以利用线程池进行一定程度的优化缓解，但解决不了已连接但不发报文的等待问题。（这也是nio改进的方向）
-### 同步阻塞式I/O的server代码
+缺点：线程资源是恨宝贵的，创建和切换线程上下文环境是非常消耗资源的。对于连接多，报文内容少的客户端请求，大部分服务端线程都会因客户端建立了tcp连接但发送报文稀疏而进入等待空闲状态，十分浪费资源。虽然可以利用线程池进行一定程度的优化缓解，但解决不了已连接但不发报文的等待问题。（这也是nio改进的方向）
+### 阻塞式I/O的server代码
 ```java
 public class BioServer {
     private static ServerSocket server;
@@ -43,6 +43,86 @@ public class BioServer {
 }
 ```
 ## 非阻塞式I/O
-非阻塞式I/O也称之为NIO，就是为了解决阻塞IO的缺点。所谓的非阻塞，就是把服务端的serverSocket的accept()、客户端的socket的connect(), read() 和write()变成了非阻塞，即调用后立刻返回不管是否有值。NIO中的类名为ServerSocketChannel 和 SocketChannel就是上面说的可以为非阻塞的socket。但仅仅这样是不够的，
+非阻塞式I/O也称之为NIO，就是为了解决阻塞IO占用大量线程资源的缺点。所谓的非阻塞，就是把服务端的serverSocket的accept()、客户端的socket的connect(), read() 和write()变成了非阻塞，即调用后立刻返回不管是否有值。NIO中的类名为ServerSocketChannel 和 SocketChannel就是上面说的可以配置为非阻塞的socket。但仅仅这样是不够的，一般是需要选择器和通道的配合，才能解决线程资源不够的问题。
+### 选择器selector
+一个线程 Thread 使用一个选择器 Selector 通过轮询的方式去检查多个通道 Channel 上的事件，从而让一个线程就可以处理多个事件。
+
+因为创建和切换线程的开销很大，因此使用一个线程来处理多个事件而不是一个线程处理一个事件具有更好的性能。
 
 <div align="center"> <img src="../pics//4d930e22-f493-49ae-8dff-ea21cd6895dc.png"/> </div><br>
+
+这里就拿ServerSocketChannel和SocketChannel举例，由于这里的channel都可以设置为非阻塞，所以selector可以不断去轮询所有的channel，每次轮询将有accept()、read()事件的channel统一处理，一个channel对应的就是一个tcp连接，当有报文发送过来时，才会去处理，大大节省了线程资源，实现了一个线程处理多个请求。
+### 非阻塞式I/O的server代码
+```java
+public class NIOServer {
+
+    public static void main(String[] args) throws IOException {
+        Selector selector = Selector.open();
+        ServerSocketChannel ssChannel = ServerSocketChannel.open();
+        // 设置为非阻塞，即accept为非阻塞
+        ssChannel.configureBlocking(false);
+        // 把ServerSocketChannel注册到selector上，并且指定SelectionKey.OP_ACCEPT，表示只接受连接,不处理数据。
+        ssChannel.register(selector, SelectionKey.OP_ACCEPT);
+
+        ServerSocket serverSocket = ssChannel.socket();
+        InetSocketAddress address = new InetSocketAddress("127.0.0.1", 8888);
+        serverSocket.bind(address);
+
+        while (true) {
+            // 轮询阻塞，直到有server的accept或client的read事件产生
+            selector.select();
+            // keys包含所有有事件的channel
+            Set<SelectionKey> keys = selector.selectedKeys();
+            Iterator<SelectionKey> keyIterator = keys.iterator();
+            while (keyIterator.hasNext()) {
+                SelectionKey key = keyIterator.next();
+                if (key.isAcceptable()) {
+                    // 有客户端进行tcp连接
+                    ServerSocketChannel ssChannel1 = (ServerSocketChannel) key.channel();
+                    // 服务器会为每个新连接创建一个 SocketChannel
+                    SocketChannel sChannel = ssChannel1.accept();
+                    // 设置为非阻塞
+                    sChannel.configureBlocking(false);
+                    // 这个新连接主要用于从客户端读取数据，即制定SelectionKey.OP_READ
+                    sChannel.register(selector, SelectionKey.OP_READ);
+                } else if (key.isReadable()) {
+                    // 处理客户端发来的报文
+                    SocketChannel sChannel = (SocketChannel) key.channel();
+                    System.out.println(readDataFromSocketChannel(sChannel));
+                    sChannel.close();
+                }
+                // 需要把处理完的channel删除，防止重复处理
+                keyIterator.remove();
+            }
+        }
+    }
+
+    private static String readDataFromSocketChannel(SocketChannel sChannel) throws IOException {
+        ByteBuffer buffer = ByteBuffer.allocate(1024);
+        StringBuilder data = new StringBuilder();
+        while (true) {
+            buffer.clear();
+            int n = sChannel.read(buffer);
+            if (n == -1) {
+                break;
+            }
+            buffer.flip();
+            int limit = buffer.limit();
+            char[] dst = new char[limit];
+            for (int i = 0; i < limit; i++) {
+                dst[i] = (char) buffer.get(i);
+            }
+            data.append(dst);
+            buffer.clear();
+        }
+        return data.toString();
+    }
+}
+```
+## 总结
+可以从上面代码看到一个线程处理多个请求，这也是多亏了非阻塞的功劳，当然也可以起一个线程池去处理待处理的channel来实现高并发。nio中的selector只做了少量的封装，只是把轮询channel的工作给做了，并不是非常简便，netty在此基础上又进行了一次非常棒封装，使用netty可以专注于业务逻辑的编写，不用过多地去关心连接的逻辑。
+## 拓展
+上面基本上说的都是服务端的nio，之前的selector思想也称之为多路复用，即一个seletor处理多个请求。客户端也有多路复用的概念，拿http协议来举例：
+
+在http协议1.0及之前默认都是短连接，建立三次握手后，发送完一个http报文，就会四次挥手断开连接，建立tcp连接是非常耗时的，这样做显然是不太合适的。在http协议1.1中默认是长连接，可以在一次tcp连接中加入多个http请求报文，来缓解服务器压力。包括后面的协议2.0的多路复用，来实现在一个连接中并发地处理多个请求的，而且并发请求的数量比HTTP1.1大了好几个数量级。
+
