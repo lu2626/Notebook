@@ -145,6 +145,7 @@ private AbstractChannelHandlerContext findContextOutbound() {
 ```
 
 以下是ChannelHandlerContext的一些传递事件的方法：
+
 入站操作API|方法说明
 -|-
 fireChannelRegistered()	|向下一个 ChannelInboundHandler 通知 ChannelRegistered 事件
