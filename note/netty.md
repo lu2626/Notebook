@@ -1,5 +1,5 @@
 # netty 4
-在介绍netty之前，可以先回顾一下java原生nio包是如何编写服务端的，这样方便体现出netty的优势，之后贴出的netty源码是基于netty 4.1.5.Final
+在介绍netty之前，可以先回顾一下java原生nio包是如何编写服务端的，这样方便体现出netty的优势。
 ## nio复习
 java原生的nio底层内容暴露的比较多，不利于快速编写业务逻辑，以下面代码为例：
 ```java
@@ -68,7 +68,7 @@ public class NIOServer {
     }
 }
 ```
-有很多逻辑在写服务端时基本是不变的，例如创建ServerSocketChannel，设置成OP_ACCEPT事件并注册到selector，一旦有新连接进来，创建一个SocketChannel，设置为OP_READ事件并注册到selector，在轮询中通过selector不断获取SelectionKey的集合，去处理接受建立新的连接或处理连接发来的请求。对于这些我们不关心的，逻辑不怎么变动的代码，netty就进行了一次很好封装。
+有很多逻辑在写服务端时基本是不变的，例如创建ServerSocketChannel，设置成接收OP_ACCEPT事件并注册到selector，一旦有新连接进来，创建一个SocketChannel，设置成接收OP_READ事件并注册到selector，在轮询中通过selector不断获取SelectionKey的集合，去处理接受建立新的连接或处理连接发来的请求。对于这些我们不关心的，逻辑不怎么变动的代码，netty就进行了一次很好封装。
 ### netty代码例子：
 ```java
 public static void main(String[] args) throws Exception {
@@ -107,15 +107,15 @@ public static void main(String[] args) throws Exception {
 }
 ```
 #### ServerBootstrap
-一个netty的引导器，后面所说的所有配置都通过它来配。
+一个netty的引导器，后面所说的所有配置都通过它来配，netty也是通过它来做初始化与启动的。
 
 #### EventLoopGroup
 EventLoopGroup是EventLoop的一个集合，EventLoop在netty中是处理客户端新来的连接或连接传来的数据，父类就是Executor，可以认为一个EventLoop代表一个单线程组，它可以处理多个channel所产生的事件(一次请求会被封装成一个事件event)，处理方式是依次加入task队列，单线程慢慢消化，职责相当于selector角色。为了性能考虑一般建两个EventLoopGroup，分别为bossGroup和workerGroup，也就是对于OP_ACCEPT事件和OP_READ事件做分别处理。
 
 结构：EventLoopGroup 一 对 多 EventLoop，EventLoop 一 对 多 channel，而一个channel就是一个连接或请求。
 
-在bossGroup中一般就定一个EventLoop，主要是处理OP_ACCEPT事件，把获取的SocketChannel交给workerGroup。对于workerGroup，一般会有多个EventLoop,workerGroup会把接收到的SocketChannel通过next()方法分配到某个EventLoop，对于OP_READ事件，EventLoop就可以把该事件传给ChannelPipeline做过滤返回了。
-<div align="center"> <img src="../pics//EventLoopGroup.png1"/> </div><br>
+在bossGroup中一般就定一个EventLoop，主要是处理OP_ACCEPT事件，把获取的SocketChannel交给workerGroup。对于workerGroup，一般会有多个EventLoop,workerGroup会把接收到的SocketChannel通过next()方法分配到某个EventLoop，对于OP_READ事件，EventLoop就可以把该事件传给ChannelPipeline做过滤返回了，具体整个过程会在之后的源码分析中做详细说明。
+<div align="center"> <img src="../pics//EventLoopGroup.png"/> </div><br>
 
 #### ChannelPipeline
 结构：ChannelPipeline 一对一 Channel 相互持有对方引用，并且还持有ChannelHandlerContext的头尾引用，方便遍历。
@@ -131,7 +131,7 @@ EventLoopGroup是EventLoop的一个集合，EventLoop在netty中是处理客户�
 #### ChannelHandler
 结构：ChannelHandler 一对一 ChannelHandlerContext
 
-由于handler在pipeline中添加是有序的，是利用ChannelHandlerContext做的一个链表结构，所以添加顺序不能随意。handler与handler之间是通过ChannelHandlerContext传递数据，该上下文与ChannelHandler是一一对应的，ChannelInboundHandler可以通过fireChannelRead(msg:Object)传递，顺序是从前往后，ChannelOutboundHandler是通过write(msg:Object [,ChannelPromise])传递，顺序是从后往前，所以一个channel的请求就是从前往后接收，再从后往前输出。write方法一般在最后的ChannelInboundHandler中添加，从该ChannelInboundHandler往前找，找到第一个ChannelOutboundHandler进行写入。所以要是在该InboundHandler后添加的OutboundHandler就不会被处理到。
+由于handler在pipeline中添加是有序的，是利用ChannelHandlerContext做的一个链表结构，所以添加顺序不能随意。handler与handler之间是通过ChannelHandlerContext传递数据，该上下文与ChannelHandler是一一对应的，ChannelInboundHandler可以通过fireChannelRead(msg:Object)传递，顺序是从前往后，ChannelOutboundHandler是通过write(msg:Object [,ChannelPromise])传递，顺序是从后往前，所以一个channel的请求就是从前往后接收，再从后往前输出。write方法一般在最后的ChannelHandler中添加，从该ChannelHandler依次往前找，找到是ChannelOutboundHandler类型的就进行写入。所以要是在该ChannelHandler后添加的OutboundHandler就不会被处理到。
 
 write方法中往前找OutboundHandler的上下文：
 ```java
@@ -171,7 +171,7 @@ read()	向下一个 ChannelOutboundHandler |发送 read 事件
 
 **注意**：Netty基于单线程设计的EventLoop能够同时处理成千上万的客户端连接的IO事件，缺点是单线程不能够处理时间过长的任务，这样会阻塞使得IO事件的处理被阻塞，严重的时候回造成IO事件堆积，服务不能够高效响应客户端请求。也就是在channelread()方法中的业务逻辑代码不能太耗时的，否则就来不及处理同一EventLoop下其他channel的事件请求。
 
-解决方案：既然要求channelhandle快速返回，那么就可以在其channelread()方法中额外开线程池去解决耗时的逻辑。但是有一个问题是如何做响应返回呢？等EventLoop线程早就走完了，线程池中的线程才出结果，拿着这个结果却没地方让它传，非常蛋疼。其实直接调用ChannelHandlerContext的write方法就可以了，write方法已经做了处理，它在实际发送消息前会检查当前线程是否与ChannelHandlerContext所在的EventLoop的线程相同，之前说过一个EventLoop就是一个单线程组，若不同，就会消息封装成task，放进队列，等待该EventLoop下一次调用再发送。所以不管是否开线程池处理，只要把ChannelHandlerContext拿到，调用它的write都是可以做返回的。
+解决方案：既然要求channelhandle快速返回，那么就可以在其channelread()方法中额外开线程池去解决耗时的逻辑。但是有一个问题是如何做响应返回呢？等EventLoop线程早就走完了，线程池中的线程才出结果，拿着这个结果却没地方让它传，非常蛋疼。其实直接调用ChannelHandlerContext的write方法就可以了，write方法已经做了处理，它在实际发送消息前会检查当前线程是否与ChannelHandlerContext所在的EventLoop的线程相同，之前说过一个EventLoop就是一个单线程组，若不同，就会消息封装成task，放进队列，等待该EventLoop下一次调用再发送。所以不管是否开线程池处理，只要把ChannelHandlerContext拿到，调用它的write都是可以做返回的，不过是等下轮再返回，会稍微有点延迟，不过既然channelhandle已经去掉了耗时逻辑，做到了快速返回，那么这点延迟是可以忽略不计的。
 
 ChannelHandlerContextd的read方法：
 ```java
