@@ -132,7 +132,7 @@ protected void doRegister() throws Exception {
     }
 }
 ```
-initAndRegister()这一部分算是结束了，虽然代码很多，也删减了很多，但主要功能就是通过启动ServerBootstrap为入口进行一些初始化与服务端相关的channel注册selector过程。
+initAndRegister()这一部分算是结束了，虽然代码很多，但主要功能就是通过启动ServerBootstrap为入口进行一些初始化与服务端相关的channel注册selector过程。
 ## 第二部分:绑定
 接上文的AbstractBootstrap.dobind注册成功后，绑定是netty处理请求的核心逻辑，对应nio就是selector.select()所在循环内做的事情。
 
@@ -240,6 +240,7 @@ private void processSelectedKeysOptimized(SelectionKey[] selectedKeys) {
         }
     }
 }
+
 // 实际处理每种类型的channel
 private void processSelectedKey(SelectionKey k, AbstractNioChannel ch) {
     final AbstractNioChannel.NioUnsafe unsafe = ch.unsafe();
