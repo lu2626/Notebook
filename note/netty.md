@@ -72,14 +72,21 @@ public class NIOServer {
 ### netty代码例子：
 ```java
 public static void main(String[] args) throws Exception {
+    // bossGroup指定一个eventloop，一个eventloop为一个单线程组
+    // eventloop本质是起一个selector做非阻塞的循环检查各个channel
     EventLoopGroup bossGroup = new NioEventLoopGroup(1);
+    // workerGroup默认是包含多个eventloop
     EventLoopGroup workerGroup = new NioEventLoopGroup();
+    // netty引导器，用来做初始配置与启动
     ServerBootstrap b = new ServerBootstrap();
+    // 把bossGroup和workerGroup加入引导器中
     b.group(bossGroup, workerGroup)
+            // 设置ServerSocketChanne为非阻塞
             .channel(NioServerSocketChannel.class)
             .childHandler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     public void initChannel(SocketChannel ch) {
+                        // 加入handler处理进来的请求，handler是实际填写逻辑的地方
                         ChannelPipeline pipeline = ch.pipeline();
                         pipeline.addLast(new HttpRequestDecoder());
                         pipeline.addLast(new HttpObjectAggregator(MAX_CONTENT_LENGTH));
@@ -92,33 +99,27 @@ public static void main(String[] args) throws Exception {
                         });
                     }
                 });
-    ChannelFuture f = b.bind(2048);
-    f.addListener(new ChannelFutureListener() {
-        @Override
-        public void operationComplete(ChannelFuture future) throws Exception {
-            if (future.isSuccess()) {
-                System.out.println("Server bound");
-            } else {
-                System.err.println("bound fail");
-                future.cause().printStackTrace();
-            }
-        }
-    });
+    // 绑定端口
+    ChannelFuture f = b.bind(2048).sync();
+    // 关闭
+    f.channel().closeFuture().sync();
 }
 ```
 #### ServerBootstrap
 一个netty的引导器，后面所说的所有配置都通过它来配，netty也是通过它来做初始化与启动的。
 
 #### EventLoopGroup
-EventLoopGroup是EventLoop的一个集合，EventLoop在netty中是处理客户端新来的连接或连接传来的数据，父类就是Executor，可以认为一个EventLoop代表一个单线程组，它可以处理多个channel所产生的事件(一次请求会被封装成一个事件event)，处理方式是依次加入task队列，单线程慢慢消化，职责相当于selector角色。为了性能考虑一般建两个EventLoopGroup，分别为bossGroup和workerGroup，也就是对于OP_ACCEPT事件和OP_READ事件做分别处理。
+EventLoopGroup是EventLoop的一个集合，EventLoop在netty中是处理客户端新来的连接或连接传来的数据，父类就是Executor，可以认为一个EventLoop代表一个单线程组，它可以处理多个channel所产生的事件(一次请求会被封装成一个事件event)，职责相当于selector角色。为了性能考虑一般建两个EventLoopGroup，分别为bossGroup和workerGroup，也就是对于OP_ACCEPT事件和OP_READ事件做分别处理，该处运用了reactor设计模式。
+<div align="center"> <img src="../pics//reactor.jpg"/> </div><br>
+根据该模式的定义，我所理解的reactor设计模式就是在nio服务端代码例子的基础上把接收连接和处理请求分成两个线程组去做，netty做的就是设计这两个线程组，并且管理他们。
 
 结构：EventLoopGroup 一 对 多 EventLoop，EventLoop 一 对 多 channel，而一个channel就是一个连接或请求。
 
-在bossGroup中一般就定一个EventLoop，主要是处理OP_ACCEPT事件，把获取的SocketChannel交给workerGroup。对于workerGroup，一般会有多个EventLoop,workerGroup会把接收到的SocketChannel通过next()方法分配到某个EventLoop，对于OP_READ事件，EventLoop就可以把该事件传给ChannelPipeline做过滤返回了，具体整个过程会在之后的源码分析中做详细说明。
+在bossGroup中一般就定一个EventLoop，主要是处理OP_ACCEPT事件，把获取的SocketChannel交给workerGroup。对于workerGroup，一般会有多个EventLoop,workerGroup会把接收到的SocketChannel通过next()方法分配到某个EventLoop，对于OP_READ事件，EventLoop就可以把该事件传给ChannelPipeline做处理返回了，具体如何从请求进来到ChannelPipeline整个过程会在之后的源码分析中做详细说明。
 <div align="center"> <img src="../pics//EventLoopGroup.png"/> </div><br>
 
 #### ChannelPipeline
-结构：ChannelPipeline 一对一 Channel 相互持有对方引用，并且还持有ChannelHandlerContext的头尾引用，方便遍历。
+结构：ChannelPipeline 一对一 Channel 相互持有对方引用，并且还持有ChannelHandlerContext的头尾引用，ChannelHandlerContext可以把它想象成链表，是用来连接一个个handler，所以handler的添加是有序的。
 
 在workerGroup中把OP_READ事件接收后，会发送到ChannelPipeline中，ChannelPipeline与channel的关系是一对一， 设计思想类似于责任链模式，这里对于请求的处理相当于springmvc中的处理器拦截器。ChannelPipeline维护着一个ChannelHandler的链表队列,在Netty中关于ChannelHandler有两个重要的接口，ChannelInBoundHandler和ChannelOutBoundHandler。inbound可以理解为网络数据从外部流向系统内部，而outbound可以理解为网络数据从系统内部流向系统外部。
 
@@ -171,7 +172,9 @@ read()	向下一个 ChannelOutboundHandler |发送 read 事件
 
 **注意**：Netty基于单线程设计的EventLoop能够同时处理成千上万的客户端连接的IO事件，缺点是单线程不能够处理时间过长的任务，这样会阻塞使得IO事件的处理被阻塞，严重的时候回造成IO事件堆积，服务不能够高效响应客户端请求。也就是在channelread()方法中的业务逻辑代码不能太耗时的，否则就来不及处理同一EventLoop下其他channel的事件请求。
 
-解决方案：既然要求channelhandle快速返回，那么就可以在其channelread()方法中额外开线程池去解决耗时的逻辑。但是有一个问题是如何做响应返回呢？等EventLoop线程早就走完了，线程池中的线程才出结果，拿着这个结果却没地方让它传，非常蛋疼。其实直接调用ChannelHandlerContext的write方法就可以了，write方法已经做了处理，它在实际发送消息前会检查当前线程是否与ChannelHandlerContext所在的EventLoop的线程相同，之前说过一个EventLoop就是一个单线程组，若不同，就会消息封装成task，放进队列，等待该EventLoop下一次调用再发送。所以不管是否开线程池处理，只要把ChannelHandlerContext拿到，调用它的write都是可以做返回的，不过是等下轮再返回，会稍微有点延迟，不过既然channelhandle已经去掉了耗时逻辑，做到了快速返回，那么这点延迟是可以忽略不计的。
+解决方案：
+
+（一）既然要求channelhandle快速返回，那么就可以在其channelread()方法中额外开线程池去解决耗时的逻辑。但是有一个问题是如何做响应返回呢？等EventLoop线程早就走完了，线程池中的线程才出结果，拿着这个结果却没地方让它传，非常蛋疼。其实直接调用ChannelHandlerContext的write方法就可以了，write方法已经做了处理，它在实际发送消息前会检查当前线程是否与ChannelHandlerContext所在的EventLoop的线程相同，之前说过一个EventLoop就是一个单线程组，若不同，就会消息封装成task，放进队列，等待该EventLoop下一次调用再发送。所以不管是否开线程池处理，只要把ChannelHandlerContext拿到，调用它的write都是可以做返回的，不过是等下轮再返回，会稍微有点延迟，不过既然channelhandle已经去掉了耗时逻辑，做到了快速返回，那么这点延迟是可以忽略不计的。
 
 ChannelHandlerContextd的read方法：
 ```java
@@ -201,7 +204,16 @@ private void write(Object msg, boolean flush, ChannelPromise promise) {
         }
     }
 ```
+（二）利用ctx获取eventloop，实现run方法交给框架自己去调用，execute会把run方法封装进task加入mpsc队列，每次eventloop处理完新进来的channel，都会把队列中的task拿出来处理，之后在源码分析中也会讲到。
 
+```java
+ctx.channel().eventLoop().execute(new Runnable() {
+    @Override
+    public void run() {
+        //...
+    }
+});
+```
 
 
 
