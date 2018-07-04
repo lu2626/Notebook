@@ -110,7 +110,7 @@ public static void main(String[] args) throws Exception {
 
 #### EventLoopGroup
 EventLoopGroup是EventLoop的一个集合，EventLoop在netty中是处理客户端新来的连接或连接传来的数据，父类就是Executor，可以认为一个EventLoop代表一个单线程组，它可以处理多个channel所产生的事件(一次请求会被封装成一个事件event)，职责相当于selector角色。为了性能考虑一般建两个EventLoopGroup，分别为bossGroup和workerGroup，也就是对于OP_ACCEPT事件和OP_READ事件做分别处理，该处运用了reactor设计模式。
-<div align="center"> <img src="../pics//reactor.jpg"/> </div><br>
+<div align="center"> <img src="../pics//Reactor.jpg"/> </div><br>
 根据该模式的定义，我所理解的reactor设计模式就是在nio服务端代码例子的基础上把接收连接和处理请求分成两个线程组去做，netty做的就是设计这两个线程组，并且管理他们。
 
 结构：EventLoopGroup 一 对 多 EventLoop，EventLoop 一 对 多 channel，而一个channel就是一个连接或请求。
